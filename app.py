@@ -1,16 +1,18 @@
 import streamlit as st
+import pandas as pd
 import networkx as nx
 import folium
 from streamlit_folium import st_folium
+import random
 
 # Page Configuration
 st.set_page_config(
-    page_title="Smart Public Transportation Route Planner",
+    page_title="Smart Public Transportation Route Planner with Traffic",
     page_icon="🚍",
     layout="wide"
 )
 
-# Advanced Custom CSS for Modern UI & Premium Card Look
+# Advanced Custom CSS for Modern UI
 st.markdown("""
     <style>
     .stApp {
@@ -30,7 +32,6 @@ st.markdown("""
         font-weight: bold;
         background-color: #28a745;
         color: white;
-        transition: 0.3s;
     }
     .stButton>button:hover {
         background-color: #218838;
@@ -39,26 +40,41 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# App Header with Markdown Styling
-st.markdown("# 🚍 Smart Public Transportation Route Planner")
-st.markdown("##### *Advanced Graph-Based Transit Network Optimization & Live Mapping System*")
+st.markdown("# 🚍 Smart Route Planner & Live Traffic Tracker")
+st.markdown("##### *Shortest Path Optimization with Real-Time Traffic Congestion Analysis*")
 st.markdown("---")
 
-# Graph & Data Setup (Dhaka Transit Nodes)
-G = nx.Graph()
-nodes_coords = {
-    'Uttara': (23.8759, 90.3795),
-    'Airport': (23.8450, 90.4003),
-    'Banani': (23.7937, 90.4066),
-    'Farmgate': (23.7570, 90.3900),
-    'Shahbagh': (23.7380, 90.3944),
-}
+# Load Dynamic Graph & Station Coordinates from CSV File
+@st.cache_data
+def load_transit_data():
+    try:
+        df = pd.read_csv("stations.csv")
+    except Exception:
+        # Fallback dummy data if file is missing
+        data = {
+            'source': ['Uttara', 'Airport', 'Banani', 'Farmgate'],
+            'target': ['Airport', 'Banani', 'Farmgate', 'Shahbagh'],
+            'weight': [3.0, 5.5, 4.0, 2.5],
+            'fare': [15, 20, 20, 15],
+            'lat1': [23.8759, 23.8450, 23.7937, 23.7570],
+            'lon1': [90.3795, 90.4003, 90.4066, 90.3900],
+            'lat2': [23.8450, 23.7937, 23.7570, 23.7380],
+            'lon2': [90.4003, 90.4066, 90.3900, 90.3944]
+        }
+        df = pd.DataFrame(data)
+        
+    graph = nx.Graph()
+    coords = {}
+    
+    for _, row in df.iterrows():
+        u, v = row['source'], row['target']
+        graph.add_edge(u, v, weight=row['weight'], fare=row['fare'])
+        coords[u] = (row['lat1'], row['lon1'])
+        coords[v] = (row['lat2'], row['lon2'])
+        
+    return graph, coords
 
-G.add_edge('Uttara', 'Airport', weight=3.0, fare=15)
-G.add_edge('Airport', 'Banani', weight=5.5, fare=20)
-G.add_edge('Banani', 'Farmgate', weight=4.0, fare=20)
-G.add_edge('Farmgate', 'Shahbagh', weight=2.5, fare=15)
-G.add_edge('Uttara', 'Banani', weight=8.0, fare=30)
+G, nodes_coords = load_transit_data()
 
 # Initialize Session State
 if 'calculated_path' not in st.session_state:
@@ -68,16 +84,26 @@ if 'total_cost' not in st.session_state:
 if 'current_metric' not in st.session_state:
     st.session_state.current_metric = 'weight'
 
+# --- TRAFFIC SIMULATION FUNCTION ---
+def get_traffic_status():
+    conditions = [
+        {"status": "🟢 Smooth Flow (No Jam)", "multiplier": 1.0, "color": "green", "line_color": "#28a745"},
+        {"status": "🟡 Moderate Traffic (Medium Jam)", "multiplier": 1.4, "color": "orange", "line_color": "#ffc107"},
+        {"status": "🔴 Heavy Traffic Jam!", "multiplier": 2.2, "color": "red", "line_color": "#dc3545"}
+    ]
+    return random.choice(conditions)
+
 # --- SIDEBAR CONTROL PANEL ---
 with st.sidebar:
     st.markdown("### 🧭 Control Dashboard")
-    st.markdown("Configure routing parameters:")
+    st.markdown(f"Loaded **{len(nodes_coords)} Stations**.")
     st.divider()
     
     service_mode = st.selectbox("Select Service Mode", ["Optimization Service (Smart Routes)", "Live Vehicle Tracking"])
     
-    source = st.selectbox("📍 From Station", list(nodes_coords.keys()))
-    target = st.selectbox("🎯 To Station", list(nodes_coords.keys()), index=2)
+    station_list = sorted(list(nodes_coords.keys()))
+    source = st.selectbox("📍 From Station", station_list)
+    target = st.selectbox("🎯 To Station", station_list, index=min(2, len(station_list)-1))
     
     opt_type = st.radio("⚙️ Optimize Based On:", ["Minimum Distance (Weight)", "Minimum Cost (Fare)"])
     metric = 'weight' if 'Distance' in opt_type else 'fare'
@@ -94,21 +120,27 @@ with st.sidebar:
                 st.session_state.calculated_path = nx.shortest_path(G, source=source, target=target, weight=metric)
                 st.session_state.total_cost = nx.shortest_path_length(G, source=source, target=target, weight=metric)
                 st.session_state.current_metric = metric
+                st.session_state.traffic_info = get_traffic_status()
             except Exception:
+                st.error("No path exists between selected stations!")
                 st.session_state.calculated_path = []
 
 # --- MAIN LAYOUT ---
-# Display Route Summary inside a beautiful custom card if calculated
 if st.session_state.calculated_path:
+    traffic = st.session_state.traffic_info
+    est_time = round(st.session_state.total_cost * traffic['multiplier'] * 4, 1)
+    
     st.markdown(f"""
         <div class="metric-container">
-            <h4>💡 Optimal Route Found Successfully</h4>
+            <h4>💡 Optimal Route & Traffic Analysis</h4>
             <p style="font-size: 16px; font-weight: bold; color: #333;">Path: {' ➔ '.join(st.session_state.calculated_path)}</p>
-            <p style="font-size: 15px; color: #555;">Total {"Distance" if st.session_state.current_metric == 'weight' else "Cost"}: <b>{st.session_state.total_cost} {"km" if st.session_state.current_metric == 'weight' else "BDT"}</b></p>
+            <p style="font-size: 15px; color: #555;">Total Distance: <b>{st.session_state.total_cost} km</b></p>
+            <p style="font-size: 15px; color: {traffic['color']};"><b>Live Traffic Status: {traffic['status']}</b></p>
+            <p style="font-size: 15px; color: #333;">Estimated Travel Time: <b>~{est_time} minutes</b></p>
         </div>
     """, unsafe_allow_html=True)
 
-st.markdown("### 🗺️ Geographic Transit Map & Direction")
+st.markdown("### 🗺️ Geographic Transit Map & Live Direction")
 
 # Initialize Folium Map centered at Dhaka
 m = folium.Map(location=[23.7800, 90.4000], zoom_start=12, tiles="OpenStreetMap")
@@ -126,15 +158,16 @@ if st.session_state.calculated_path:
             icon=folium.Icon(color="blue", icon="info-sign")
         ).add_to(m)
     
-    # DRAW GOOGLE MAPS STYLE BRIGHT GREEN POLYLINE DIRECTION
+    # Dynamic line color based on traffic (Green = Smooth, Orange = Moderate, Red = Heavy Jam)
+    line_color = st.session_state.traffic_info['line_color']
+    
     folium.PolyLine(
         path_coords, 
-        color="#28a745",  # Bright Green Color
-        weight=7,         # Thick Line
-        opacity=0.9       # Visibility
+        color=line_color, 
+        weight=7,         
+        opacity=0.9       
     ).add_to(m)
 else:
-    # Default view showing all station markers when no search is triggered
     for node, coords in nodes_coords.items():
         folium.Marker(
             coords, 
